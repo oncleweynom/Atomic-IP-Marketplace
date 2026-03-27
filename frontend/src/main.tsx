@@ -1,7 +1,8 @@
-
+import React, { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { WalletProvider } from "./context/WalletContext";
+import { useWallet } from "./context/WalletContext";
 import { WalletConnectButton } from "./components/WalletConnectButton";
 import { MySwapsDashboard } from "./components/MySwapsDashboard";
 import { MyListingsDashboard } from "./components/MyListingsDashboard";
