@@ -454,6 +454,77 @@ export async function getListing(listingId: number) {
 }
 
 /**
+ * Register a new IP listing on the ip_registry contract.
+ * Calls register_ip(owner, ipfs_hash, merkle_root, royalty_bps, royalty_recipient, price_usdc)
+ *
+ * @param ipfsHash         - IPFS content hash (hex string)
+ * @param merkleRoot       - Merkle root (hex string, typically 64-char)
+ * @param royaltyBps       - Royalty basis points (0-10000, where 10000 = 100%)
+ * @param royaltyRecipient - Stellar address receiving royalties (G...)
+ * @param priceUsdc        - Price in USDC (human-readable, e.g. 10.5)
+ * @param wallet           - Connected wallet { address, signTransaction }
+ * @returns Promise<void>
+ */
+export async function registerIp(
+  ipfsHash: string,
+  merkleRoot: string,
+  royaltyBps: number,
+  royaltyRecipient: string,
+  priceUsdc: number,
+  wallet: { address: string; signTransaction: (xdr: string) => Promise<string> }
+): Promise<void> {
+  if (!IP_REGISTRY_CONTRACT_ID) {
+    throw new Error("VITE_CONTRACT_IP_REGISTRY is not configured.");
+  }
+  if (!ipfsHash || !ipfsHash.trim()) {
+    throw new Error("IPFS hash is required.");
+  }
+  if (!merkleRoot || !merkleRoot.trim()) {
+    throw new Error("Merkle root is required.");
+  }
+  if (royaltyBps < 0 || royaltyBps > 10000) {
+    throw new Error("Royalty bps must be between 0 and 10000.");
+  }
+  if (priceUsdc <= 0) {
+    throw new Error("Price must be greater than 0.");
+  }
+  if (!royaltyRecipient || !royaltyRecipient.trim()) {
+    throw new Error("Royalty recipient address is required.");
+  }
+
+  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const sourceAccount = await server.getAccount(wallet.address);
+  const contract = new StellarSdk.Contract(IP_REGISTRY_CONTRACT_ID);
+
+  // Convert hex strings to Bytes (Buffer)
+  const ipfsBytes = Buffer.from(ipfsHash.replace(/^0x/, ""), "hex");
+  const merkleBytes = Buffer.from(merkleRoot.replace(/^0x/, ""), "hex");
+
+  // USDC has 7 decimals, price_usdc is i128
+  const priceRaw = Math.round(priceUsdc * 1e7);
+
+  const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
+    fee: StellarSdk.BASE_FEE,
+    networkPassphrase: networkPassphrase(),
+  })
+    .addOperation(
+      contract.call(
+        "register_ip",
+        StellarSdk.nativeToScVal(new StellarSdk.Address(wallet.address), { type: "address" }),
+        StellarSdk.xdr.ScVal.scvBytes(ipfsBytes),
+        StellarSdk.xdr.ScVal.scvBytes(merkleBytes),
+        StellarSdk.nativeToScVal(royaltyBps, { type: "u32" }),
+        StellarSdk.nativeToScVal(new StellarSdk.Address(royaltyRecipient), { type: "address" }),
+        StellarSdk.nativeToScVal(priceRaw, { type: "i128" })
+      )
+    )
+    .setTimeout(60)
+    .build();
+
+  await submitAndPoll(tx, wallet, server);
+}
+
+/**
  * Fetch all swap IDs for a seller by calling get_swaps_by_seller.
  * @param {string} sellerAddress - Stellar public key (G...)
  * @returns {Promise<number[]>}
