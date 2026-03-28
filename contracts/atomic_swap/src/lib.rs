@@ -37,6 +37,8 @@ pub struct Config {
     pub fee_bps: u32,
     pub fee_recipient: Address,
     pub cancel_delay_secs: u64,
+    pub ip_registry: Address,
+    pub allowed_tokens: soroban_sdk::Vec<Address>,
 }
 
 #[contracttype]
@@ -108,6 +110,8 @@ impl AtomicSwap {
         fee_bps: u32,
         fee_recipient: Address,
         cancel_delay_secs: u64,
+        ip_registry: Address,
+        allowed_tokens: soroban_sdk::Vec<Address>,
     ) {
         if env.storage().instance().has(&DataKey::Config) {
             env.panic_with_error(ContractError::AlreadyInitialized);
@@ -119,6 +123,8 @@ impl AtomicSwap {
                 fee_bps,
                 fee_recipient,
                 cancel_delay_secs,
+                ip_registry,
+                allowed_tokens,
             },
         );
         env.storage()
@@ -170,7 +176,6 @@ pub fn unpause(env: Env) {
         usdc_token: Address,
         usdc_amount: i128,
         zk_verifier: Address,
-        ip_registry: Address,
     ) -> u64 {
         Self::assert_not_paused(&env);
         buyer.require_auth();
@@ -179,6 +184,12 @@ pub fn unpause(env: Env) {
         }
         let config: Config = env.storage().instance().get(&DataKey::Config)
             .unwrap_or_else(|| env.panic_with_error(ContractError::NotInitialized));
+
+        // Validate usdc_token is in the allowed list
+        if !config.allowed_tokens.contains(&usdc_token) {
+            env.panic_with_error(ContractError::InvalidAmount);
+        }
+
         let now = env.ledger().timestamp();
         let expires_at = now.saturating_add(config.cancel_delay_secs);
 
@@ -199,7 +210,7 @@ pub fn unpause(env: Env) {
         }
 
         // Verify seller owns the listing in ip_registry
-        let listing = IpRegistryClient::new(&env, &ip_registry)
+        let listing = IpRegistryClient::new(&env, &config.ip_registry)
             .get_listing(&listing_id)
             .unwrap_or_else(|| env.panic_with_error(ContractError::SwapNotFound));
         if listing.owner != seller {
@@ -536,7 +547,9 @@ mod test {
         let client = AtomicSwapClient::new(&env, &contract_id);
 
         // 100 bps = 1%
-        client.initialize(&Address::generate(&env), &100u32, &fee_recipient, &60u64);
+        let mut allowed = soroban_sdk::Vec::new(&env);
+        allowed.push_back(usdc_id.clone());
+        client.initialize(&Address::generate(&env), &100u32, &fee_recipient, &60u64, &registry_id, &allowed);
 
         let swap_id = client.initiate_swap(
             &listing_id,
@@ -545,7 +558,6 @@ mod test {
             &usdc_id,
             &500,
             &zk_verifier,
-            &registry_id,
         );
 
         let key = Bytes::from_slice(&env, b"super-secret-key");
@@ -575,7 +587,9 @@ mod test {
         let client = AtomicSwapClient::new(&env, &contract_id);
 
         // 250 bps = 2.5%
-        client.initialize(&Address::generate(&env), &250u32, &fee_recipient, &60u64);
+        let mut allowed = soroban_sdk::Vec::new(&env);
+        allowed.push_back(usdc_id.clone());
+        client.initialize(&Address::generate(&env), &250u32, &fee_recipient, &60u64, &registry_id, &allowed);
 
         let swap_id = client.initiate_swap(
             &listing_id,
@@ -584,7 +598,6 @@ mod test {
             &usdc_id,
             &10_000,
             &zk_verifier,
-            &registry_id,
         );
         client.confirm_swap(&swap_id, &Bytes::from_slice(&env, b"key"));
 
@@ -610,7 +623,9 @@ mod test {
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
 
-        client.initialize(&Address::generate(&env), &0u32, &fee_recipient, &60u64);
+        let mut allowed = soroban_sdk::Vec::new(&env);
+        allowed.push_back(usdc_id.clone());
+        client.initialize(&Address::generate(&env), &0u32, &fee_recipient, &60u64, &registry_id, &allowed);
 
         let swap_id = client.initiate_swap(
             &listing_id,
@@ -619,7 +634,6 @@ mod test {
             &usdc_id,
             &1000,
             &zk_verifier,
-            &registry_id,
         );
         client.confirm_swap(&swap_id, &Bytes::from_slice(&env, b"key"));
 
@@ -644,7 +658,11 @@ mod test {
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
 
-        client.initialize(&admin, &0u32, &Address::generate(&env), &60u64);
+        client.initialize(&admin, &0u32, &Address::generate(&env), &60u64, &registry_id, &{
+            let mut v = soroban_sdk::Vec::new(&env);
+            v.push_back(usdc_id.clone());
+            v
+        });
         client.pause();
 
         client.initiate_swap(
@@ -654,7 +672,6 @@ mod test {
             &usdc_id,
             &500,
             &zk_verifier,
-            &registry_id,
         );
     }
 
@@ -675,7 +692,11 @@ mod test {
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
 
-        client.initialize(&admin, &0u32, &Address::generate(&env), &60u64);
+        client.initialize(&admin, &0u32, &Address::generate(&env), &60u64, &registry_id, &{
+            let mut v = soroban_sdk::Vec::new(&env);
+            v.push_back(usdc_id.clone());
+            v
+        });
         let swap_id = client.initiate_swap(
             &listing_id,
             &buyer,
@@ -683,7 +704,6 @@ mod test {
             &usdc_id,
             &500,
             &zk_verifier,
-            &registry_id,
         );
 
         client.pause();
@@ -706,7 +726,11 @@ mod test {
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(&env, &contract_id);
 
-        client.initialize(&admin, &0u32, &Address::generate(&env), &60u64);
+        client.initialize(&admin, &0u32, &Address::generate(&env), &60u64, &registry_id, &{
+            let mut v = soroban_sdk::Vec::new(&env);
+            v.push_back(usdc_id.clone());
+            v
+        });
         client.pause();
         client.unpause();
 
@@ -717,7 +741,6 @@ mod test {
             &usdc_id,
             &500,
             &zk_verifier,
-            &registry_id,
         );
         assert_eq!(client.get_swap_status(&swap_id), Some(SwapStatus::Pending));
     }
@@ -757,6 +780,12 @@ mod test {
             &0u32,
             &Address::generate(&env),
             &60u64,
+            &registry_id,
+            &{
+                let mut v = soroban_sdk::Vec::new(&env);
+                v.push_back(usdc_id.clone());
+                v
+            },
         );
 
         // buyer1 initiates
@@ -767,7 +796,6 @@ mod test {
             &usdc_id,
             &500,
             &zk_verifier,
-            &registry_id,
         );
 
         // buyer2 initiates, should panic
@@ -778,7 +806,6 @@ mod test {
             &usdc_id,
             &500,
             &zk_verifier,
-            &registry_id,
         );
     }
 
@@ -803,6 +830,12 @@ mod test {
             &0u32,
             &Address::generate(&env),
             &60u64,
+            &registry_id,
+            &{
+                let mut v = soroban_sdk::Vec::new(&env);
+                v.push_back(usdc_id.clone());
+                v
+            },
         );
 
         client.initiate_swap(
@@ -812,7 +845,6 @@ mod test {
             &usdc_id,
             &500,
             &zk_verifier,
-            &registry_id,
         );
     }
 
@@ -842,11 +874,15 @@ mod test {
 
         let contract_id = env.register(AtomicSwap, ());
         let client = AtomicSwapClient::new(env, &contract_id);
+        let mut allowed = soroban_sdk::Vec::new(env);
+        allowed.push_back(usdc_id.clone());
         client.initialize(
             &Address::generate(env),
             &0u32,
             &Address::generate(env),
             &60u64,
+            &registry_id,
+            &allowed,
         );
         (usdc_id, listing_id, registry_id, contract_id, client)
     }
@@ -873,7 +909,7 @@ mod test {
         let seller = Address::generate(&env);
         let zk_verifier = Address::generate(&env);
 
-        let (usdc_id, listing_id, registry_id, _contract_id, client) =
+        let (usdc_id, listing_id, _registry_id, _contract_id, client) =
             setup_swap_env(&env, &buyer, &seller, 500);
 
         let swap_id = client.initiate_swap(
@@ -883,7 +919,6 @@ mod test {
             &usdc_id,
             &500,
             &zk_verifier,
-            &registry_id,
         );
 
         let ids = client.get_swaps_by_buyer(&buyer);
@@ -924,7 +959,6 @@ mod test {
             &usdc_id,
             &500,
             &zk_verifier,
-            &registry_id,
         );
         let id2 = client.initiate_swap(
             &listing_id_2,
@@ -933,7 +967,6 @@ mod test {
             &usdc_id,
             &500,
             &zk_verifier,
-            &registry_id,
         );
         let id3 = client.initiate_swap(
             &listing_id_3,
@@ -942,7 +975,6 @@ mod test {
             &usdc_id,
             &500,
             &zk_verifier,
-            &registry_id,
         );
 
         let ids = client.get_swaps_by_buyer(&buyer);
@@ -985,7 +1017,6 @@ mod test {
             &usdc_id,
             &500,
             &zk_verifier,
-            &registry_id,
         );
         let id_b = client.initiate_swap(
             &listing_id_b,
@@ -994,7 +1025,6 @@ mod test {
             &usdc_id,
             &500,
             &zk_verifier,
-            &registry_id,
         );
 
         let ids_a = client.get_swaps_by_buyer(&buyer_a);
@@ -1033,7 +1063,6 @@ mod test {
             &usdc_id,
             &500,
             &zk_verifier,
-            &registry_id,
         );
         client.initiate_swap(
             &listing_id_2,
@@ -1042,7 +1071,6 @@ mod test {
             &usdc_id,
             &500,
             &zk_verifier,
-            &registry_id,
         );
 
         let ids = client.get_swaps_by_buyer(&buyer);
@@ -1088,6 +1116,12 @@ mod test {
             &0u32,
             &Address::generate(&env),
             &60u64,
+            &registry_id,
+            &{
+                let mut v = soroban_sdk::Vec::new(&env);
+                v.push_back(usdc_id.clone());
+                v
+            },
         );
 
         // zero amount should be rejected before any transfer or storage
@@ -1098,7 +1132,6 @@ mod test {
             &usdc_id,
             &0,
             &zk_verifier,
-            &registry_id,
         );
     }
 
@@ -1123,6 +1156,12 @@ mod test {
             &0u32,
             &Address::generate(&env),
             &120u64,
+            &registry_id,
+            &{
+                let mut v = soroban_sdk::Vec::new(&env);
+                v.push_back(usdc_id.clone());
+                v
+            },
         );
 
         let swap_id = client.initiate_swap(
@@ -1132,7 +1171,6 @@ mod test {
             &usdc_id,
             &500,
             &zk_verifier,
-            &registry_id,
         );
         assert_eq!(usdc_client.balance(&buyer), 500);
 
@@ -1159,6 +1197,12 @@ mod test {
             &0u32,
             &Address::generate(&env),
             &120u64,
+            &registry_id,
+            &{
+                let mut v = soroban_sdk::Vec::new(&env);
+                v.push_back(usdc_id.clone());
+                v
+            },
         );
 
         let swap_id = client.initiate_swap(
@@ -1168,7 +1212,6 @@ mod test {
             &usdc_id,
             &500,
             &zk_verifier,
-            &registry_id,
         );
 
         env.ledger()
@@ -1203,7 +1246,7 @@ mod test {
         let seller = Address::generate(&env);
         let zk_verifier = Address::generate(&env);
 
-        let (usdc_id, listing_id, registry_id, _contract_id, client) =
+        let (usdc_id, listing_id, _registry_id, _contract_id, client) =
             setup_swap_env(&env, &buyer, &seller, 500);
 
         let swap_id = client.initiate_swap(
@@ -1213,7 +1256,6 @@ mod test {
             &usdc_id,
             &500,
             &zk_verifier,
-            &registry_id,
         );
 
         let ids = client.get_swaps_by_seller(&seller);
@@ -1252,7 +1294,6 @@ mod test {
             &usdc_id,
             &500,
             &zk_verifier,
-            &registry_id,
         );
         let id2 = client.initiate_swap(
             &listing_id_2,
@@ -1261,7 +1302,6 @@ mod test {
             &usdc_id,
             &500,
             &zk_verifier,
-            &registry_id,
         );
         let id3 = client.initiate_swap(
             &listing_id_3,
@@ -1270,7 +1310,6 @@ mod test {
             &usdc_id,
             &500,
             &zk_verifier,
-            &registry_id,
         );
 
         let ids = client.get_swaps_by_seller(&seller);
@@ -1309,7 +1348,6 @@ mod test {
             &usdc_id,
             &500,
             &zk_verifier,
-            &registry_id,
         );
         let id_b = client.initiate_swap(
             &listing_id_b,
@@ -1318,7 +1356,6 @@ mod test {
             &usdc_id,
             &500,
             &zk_verifier,
-            &registry_id,
         );
 
         let ids_a = client.get_swaps_by_seller(&seller_a);
@@ -1356,7 +1393,6 @@ mod test {
             &usdc_id,
             &500,
             &zk_verifier,
-            &registry_id,
         );
         client.initiate_swap(
             &listing_id_2,
@@ -1365,7 +1401,6 @@ mod test {
             &usdc_id,
             &500,
             &zk_verifier,
-            &registry_id,
         );
 
         let ids = client.get_swaps_by_seller(&seller);
